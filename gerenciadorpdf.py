@@ -88,24 +88,65 @@ class BoletoProcessor:
 
     def _extrair_bb(self, texto):
         nome_pagador = None
-        for linha in texto.split('\n'):
-            if re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', linha) and re.search(r'\d{2}/\d{2}/\d{4}', linha):
-                partes = linha.split()
-                cnpj_index = next((i for i, p in enumerate(partes) if re.match(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', p)), None)
-                if cnpj_index:
-                    nome_pagador = ' '.join(partes[:cnpj_index])
-                    break
         numero_doc = None
-        linhas = texto.split('\n')
-        for i, linha in enumerate(linhas):
-            if "Nr. do documento" in linha:
-                if i+1 < len(linhas):
-                    prox_linha = linhas[i+1]
-                    numeros = re.findall(r'\d{4,}', prox_linha)
-                    numeros_filtrados = [n for n in numeros if not (1900 <= int(n) <= 2099)]
-                    if numeros_filtrados:
-                        numero_doc = numeros_filtrados[0]
+
+        # 1) Tenta extrair pelo rótulo 'Nome do Pagador' seguido do CNPJ
+        try:
+            m = re.search(r"Nome do Pagador[^\n]*\n\s*(?P<nome>.+?)\s+(?P<cnpj>\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})",
+                          texto, re.IGNORECASE | re.DOTALL)
+            if m:
+                nome_pagador = m.group('nome').strip()
+        except Exception:
+            nome_pagador = None
+
+        # 2) Se não encontrou pelo rótulo, procura qualquer CNPJ e pega a linha anterior
+        if not nome_pagador:
+            cnpj_pat = re.compile(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}')
+            m = cnpj_pat.search(texto)
+            if m:
+                # pega o trecho até 200 caracteres antes do CNPJ e usa a última linha válida
+                start = max(0, m.start() - 200)
+                trecho = texto[start:m.start()]
+                linhas = [l.strip() for l in trecho.splitlines() if l.strip()]
+                if linhas:
+                    candidato = linhas[-1]
+                    # remove rótulos comuns se existirem
+                    candidato = re.sub(r'^(Nome do Pagador[:\s-]*|Nome do Benef[ií]ciario[:\s-]*|Nome do Beneficiario[:\s-]*)', '', candidato, flags=re.IGNORECASE).strip()
+                    # evita pegar palavras como 'CEP' ou 'RUA' como nome
+                    if candidato and not re.search(r'CEP:|RUA|ENDERE', candidato, re.IGNORECASE):
+                        nome_pagador = candidato
+
+        # 3) Extrai número do documento (Nr. do Documento / Nr. do documento)
+        try:
+            mdoc = re.search(r'(Nr\. do Documento|Nr\. do documento|Nº Documento|N\. documento)[^\d\n]*\n?\s*([0-9\-]{4,})', texto, re.IGNORECASE)
+            if mdoc:
+                nums = re.findall(r'\d{4,}', mdoc.group(2))
+                nums = [n for n in nums if not (1900 <= int(n) <= 2099)]
+                if nums:
+                    numero_doc = nums[0]
+        except Exception:
+            numero_doc = None
+
+        # 4) fallback: procura por 'Nr. do Documento' em qualquer lugar e pega dígitos na próxima linha
+        if not numero_doc:
+            linhas = texto.split('\n')
+            for i, linha in enumerate(linhas):
+                if re.search(r'Nr\.? do Documento|Nr\.? do documento|Nº Documento|N\. documento', linha, re.IGNORECASE):
+                    # tenta pegar na mesma linha
+                    nums = re.findall(r'\d{4,}', linha)
+                    nums = [n for n in nums if not (1900 <= int(n) <= 2099)]
+                    if nums:
+                        numero_doc = nums[0]
                         break
+                    # tenta na próxima linha
+                    if i+1 < len(linhas):
+                        prox = linhas[i+1]
+                        nums = re.findall(r'\d{4,}', prox)
+                        nums = [n for n in nums if not (1900 <= int(n) <= 2099)]
+                        if nums:
+                            numero_doc = nums[0]
+                            break
+
         return nome_pagador, numero_doc
 
     def _extrair_sicoob(self, texto):
@@ -381,7 +422,10 @@ class VendedorEditor(tk.Toplevel):
         self.parent = parent
         self.vendedor_data = vendedor_data
         self.title("Editar Vendedor" if vendedor_data else "Adicionar Vendedor")
-        self.geometry("500x400")
+        # Aumenta tamanho inicial para evitar que o campo de entrada precise ser reposicionado
+        self.geometry("700x520")
+        # Define tamanho mínimo para evitar redimensionamento abaixo do aceitável
+        self.minsize(600, 400)
         
         self.nome_var = tk.StringVar()
         self.pasta_var = tk.StringVar()
