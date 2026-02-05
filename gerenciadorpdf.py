@@ -153,35 +153,39 @@ class BoletoProcessor:
         nome_pagador = None
         numero_doc = None
         linhas = texto.split('\n')
-        for i, linha in enumerate(linhas):
-            if linha.strip().startswith("Pagador:"):
-                nome_pagador = linha.replace("Pagador:", "").strip()
-                break
-            elif linha.strip().startswith("Pagador Vencimento"):
-                if i+1 < len(linhas):
-                    nome_pagador = re.split(r"\d", linhas[i+1])[0].strip()
+        
+        # 1) Procura pela linha "Pagador:" que contém nome + CNPJ
+        # Esta aparece no final do boleto: "Pagador: JV SUPERMERCADOS LTDA 07.543.270/0006-00"
+        for linha in linhas:
+            if "Pagador:" in linha:
+                # Extrai o nome: tudo entre "Pagador:" e o CNPJ
+                match = re.search(r'Pagador:\s*(.+?)\s+\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', linha)
+                if match:
+                    nome_pagador = match.group(1).strip()
                     break
+                else:
+                    # Se não encontrar CNPJ, pega tudo após "Pagador:"
+                    nome_pagador = linha.replace("Pagador:", "").strip()
+                    break
+        
+        # 2) Procura pelo número do documento (Nº Documento seguido de número)
         for i, linha in enumerate(linhas):
             if "Nº Documento" in linha or "N. documento" in linha:
+                # O número está na mesma linha ou na próxima
+                # Tenta extrair números de 4+ dígitos da mesma linha
+                numeros = re.findall(r'\d{4,}', linha)
+                if numeros:
+                    # Pega o primeiro número válido (não é data ou CNPJ)
+                    numero_doc = numeros[0]
+                    break
+                # Se não encontrou na mesma linha, tenta na próxima
                 if i+1 < len(linhas):
                     prox_linha = linhas[i+1]
-                    numeros = [n for n in re.findall(r'\d{5,}', prox_linha)]
+                    numeros = re.findall(r'\d{4,}', prox_linha)
                     if numeros:
                         numero_doc = numeros[0]
                         break
-                    numeros = [n for n in re.findall(r'\d{4,}', prox_linha) if '-' not in n]
-                    if len(numeros) >= 2:
-                        numero_doc = numeros[1]
-                        break
-                    elif len(numeros) == 1:
-                        numero_doc = numeros[0]
-                        break
-        if not numero_doc:
-            for linha in linhas:
-                numeros = [n for n in re.findall(r'\d{4,}', linha) if '-' not in n]
-                if len(numeros) >= 2:
-                    numero_doc = numeros[1]
-                    break
+        
         return nome_pagador, numero_doc
 
     def extrair_dados_do_pdf(self, caminho_pdf):
@@ -192,11 +196,13 @@ class BoletoProcessor:
                 for pagina in pdf.pages:
                     texto += pagina.extract_text() + "\n"
             
-            nome_pagador, numero_doc = self._extrair_bb(texto)
+            # Tenta PRIMEIRO Sicoob (para evitar que BB pegue dados de boletos Sicoob)
+            nome_pagador, numero_doc = self._extrair_sicoob(texto)
             if nome_pagador and numero_doc:
                 return nome_pagador, numero_doc, texto
 
-            nome_pagador, numero_doc = self._extrair_sicoob(texto)
+            # Se não for Sicoob, tenta BB
+            nome_pagador, numero_doc = self._extrair_bb(texto)
             if nome_pagador and numero_doc:
                 return nome_pagador, numero_doc, texto
             
